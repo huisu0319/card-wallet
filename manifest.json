@@ -1,0 +1,14 @@
+{
+  "name": "CARD WALLET — 명함 지갑",
+  "short_name": "Card Wallet",
+  "description": "받은 명함을 기록해 모아두는 개인용 명함 지갑",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#e5e5e2",
+  "theme_color": "#1a1917",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
