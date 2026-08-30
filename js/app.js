@@ -443,9 +443,9 @@ form.addEventListener('submit', async e => {
 });
 
 /* =========================================================
-   사진으로 명함 추가
+   사진으로 명함 추가 (앨범에서 고르기 · 카메라로 찍기)
    ========================================================= */
-const addMenu = $('#addMenu'), scan = $('#scan');
+const addMenu = $('#addMenu'), scan = $('#scan'), cam = $('#cam'), camVideo = $('#camVideo');
 let retakeInto = null, scanAborted = false;
 
 function openAddMenu(){
@@ -474,13 +474,94 @@ function setScan(p, label){
 }
 $('#scanCancel').onclick = () => { scanAborted = true; Photo.abort(); scan.hidden = true; closeAddMenu(); };
 
+/* ---------- 카메라 ---------- */
+const canUseCamera = !!navigator.mediaDevices?.getUserMedia;
+$('#byCamera').hidden = !canUseCamera;
+let stream = null, facing = 'environment';
+
+async function openCamera(){
+  closeAddMenu();
+  cam.hidden = false;
+  cam.classList.remove('is-err');
+  $('#camErr').hidden = true;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: facing }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false,
+    });
+  } catch (err){
+    if (err.name === 'OverconstrainedError'){                 // 후면 카메라가 없는 노트북 등
+      try { stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false }); } catch (e2){ return camFail(e2); }
+    } else return camFail(err);
+  }
+  camVideo.srcObject = stream;
+  try { await camVideo.play(); } catch {}
+  try {                                                        // 카메라가 둘 이상일 때만 전환 버튼
+    const cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+    $('#camSwitch').hidden = cams.length < 2;
+  } catch { $('#camSwitch').hidden = true; }
+}
+function camFail(err){
+  const msg = err?.name === 'NotAllowedError'
+      ? '카메라 사용이 막혀 있어요.\n브라우저 주소창의 카메라 아이콘에서 허용해 주세요.'
+    : err?.name === 'NotFoundError'
+      ? '쓸 수 있는 카메라를 찾지 못했어요.\n대신 [사진 고르기]를 써 주세요.'
+      : '카메라를 열 수 없어요. (' + (err?.name || '오류') + ')';
+  $('#camErr').textContent = msg;
+  $('#camErr').hidden = false;
+  cam.classList.add('is-err');                                 // 오류일 땐 셔터를 감춘다
+}
+function closeCamera(){
+  stream?.getTracks().forEach(t => t.stop());
+  stream = null; camVideo.srcObject = null; cam.hidden = true;
+}
+$('#byCamera').onclick = () => { retakeInto = 'new'; openCamera(); };
+$('#camClose').onclick = closeCamera;
+$('#camSwitch').onclick = async () => {
+  facing = facing === 'environment' ? 'user' : 'environment';
+  closeCamera(); await openCamera();
+};
+
+/* 미리보기(object-fit:cover) 위의 가이드 사각형 → 실제 영상 좌표로 환산해 잘라낸다 */
+function grabGuideFrame(){
+  const vw = camVideo.videoWidth, vh = camVideo.videoHeight;
+  if (!vw || !vh) return null;
+  const vr = camVideo.getBoundingClientRect(), gr = $('#camGuide').getBoundingClientRect();
+  const k = Math.max(vr.width / vw, vr.height / vh);            // cover 배율
+  const ox = (vr.width - vw * k) / 2, oy = (vr.height - vh * k) / 2;
+  const pad = 0.03;                                             // 가장자리 여유
+  let sw = (gr.width / k) * (1 + pad * 2), sh = (gr.height / k) * (1 + pad * 2);
+  let sx = (gr.left - vr.left - ox) / k - (sw * pad) / (1 + pad * 2);
+  let sy = (gr.top - vr.top - oy) / k - (sh * pad) / (1 + pad * 2);
+  sx = Math.max(0, sx); sy = Math.max(0, sy);
+  sw = Math.min(sw, vw - sx); sh = Math.min(sh, vh - sy);
+
+  const out = document.createElement('canvas');
+  const scale = Math.min(1, 1800 / sw);
+  out.width = Math.round(sw * scale); out.height = Math.round(sh * scale);
+  out.getContext('2d').drawImage(camVideo, sx, sy, sw, sh, 0, 0, out.width, out.height);
+  return out;
+}
+
+$('#camShot').onclick = () => {
+  const cv = grabGuideFrame();
+  if (!cv){ toast('아직 화면이 준비되지 않았어요'); return; }
+  buzz(14);
+  closeCamera();
+  runPipeline(cv);
+};
+
+/* ---------- 사진 한 장 → 인식 → 확인 시트 ---------- */
 async function handlePhoto(file){
   const intoSheet = retakeInto === 'sheet';
   retakeInto = null;
-  scanAborted = false;
+  try { runPipeline(await Photo.toCanvas(file), intoSheet); }
+  catch { toast('사진을 열 수 없어요'); }
+}
 
-  if (!intoSheet){                                     // 고르는 즉시 인식 화면부터 띄운다
-    closeAddMenu();
+async function runPipeline(cv, intoSheet = false){
+  scanAborted = false;
+  if (!intoSheet){                                    // 고르는 즉시 인식 화면부터 띄운다
     $('#scanImg').removeAttribute('src');
     setScan(.02, '사진 준비 중');
     scan.hidden = false;
@@ -488,15 +569,13 @@ async function handlePhoto(file){
 
   let preview;
   try {
-    const cv = await Photo.toCanvas(file);            // 회전 보정 + 축소
     const keep = await Photo.compress(cv);            // 보관용 JPEG
     if (scanAborted) return;
     preview = URL.createObjectURL(keep);
 
-    if (intoSheet){                                    // 시트에서 '다시 찍기'
+    if (intoSheet){                                    // 시트에서 '사진 바꾸기'
       shot.blob = keep; shot.id = null;
       showShotPreview(keep);
-      URL.revokeObjectURL(preview); preview = null;
       return;
     }
 
@@ -520,7 +599,7 @@ async function handlePhoto(file){
     openSheet(null, parsed);
     buzz(14);
   } catch {
-    toast('사진을 열 수 없어요');
+    toast('사진을 처리하지 못했어요');
   } finally {
     scan.hidden = true;                                // 어떤 경로로 끝나든 인식 화면은 닫는다
     if (preview) URL.revokeObjectURL(preview);
@@ -607,6 +686,7 @@ $('#importFile').onchange = async e => {
 addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
   if (!$('#photoView').hidden) $('#photoView').click();
+  else if (!cam.hidden) closeCamera();
   else if (!scan.hidden) $('#scanCancel').click();
   else if (!sheetWrap.hidden) closeSheet();
   else if (!addMenu.hidden) closeAddMenu();

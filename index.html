@@ -120,7 +120,7 @@
         <img id="shotImg" alt="찍은 명함 사진">
         <div class="shot-side">
           <p id="shotNote">사진에서 읽은 내용이에요.<br>틀린 곳은 고쳐 주세요.</p>
-          <button type="button" id="shotRetake" class="mini">다시 찍기</button>
+          <button type="button" id="shotRetake" class="mini">사진 바꾸기</button>
           <button type="button" id="shotDrop" class="mini">사진 빼기</button>
         </div>
       </div>
@@ -148,9 +148,13 @@
     <div class="sheet-scrim" id="addScrim"></div>
     <section class="sheet add-sheet">
       <div class="grabber"></div>
-      <button class="big-choice" id="byPhoto">
+      <button class="big-choice" id="byCamera" hidden>
         <svg viewBox="0 0 24 24"><rect x="3" y="6.5" width="18" height="13" rx="2.5"/><circle cx="12" cy="13" r="3.4"/><path d="M8.5 6.5l1.2-2h4.6l1.2 2"/></svg>
-        <b>사진으로 추가</b><small>명함을 찍거나 앨범에서 고르면 자동으로 읽어요</small>
+        <b>카메라로 찍기</b><small>명함을 카메라에 비추면 그 자리에서 읽어요</small>
+      </button>
+      <button class="big-choice" id="byPhoto">
+        <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M3 16l5-5 4 4 3-3 6 6"/><circle cx="8.5" cy="9.5" r="1.4" class="fill"/></svg>
+        <b>사진 고르기</b><small>이미 찍어 둔 명함 사진을 앨범·파일에서 골라요</small>
       </button>
       <button class="big-choice" id="byHand">
         <svg viewBox="0 0 24 24"><path d="M4 20h4l10-10-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg>
@@ -158,6 +162,27 @@
       </button>
       <button class="btn-ghost wide" id="addCancel">취소</button>
     </section>
+  </div>
+
+  <!-- ===== 카메라 ===== -->
+  <div id="cam" class="cam" hidden>
+    <video id="camVideo" playsinline autoplay muted></video>
+    <div class="cam-shade">
+      <div id="camGuide" class="cam-guide">
+        <i class="g tl"></i><i class="g tr"></i><i class="g bl"></i><i class="g br"></i>
+      </div>
+      <p class="cam-tip">명함을 사각형에 꽉 채워 주세요</p>
+    </div>
+    <p id="camErr" class="cam-err" hidden></p>
+    <div class="cam-bar">
+      <button id="camClose" class="icon-btn light" aria-label="닫기">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+      <button id="camShot" class="shutter" aria-label="촬영"><i></i></button>
+      <button id="camSwitch" class="icon-btn light" aria-label="카메라 전환" hidden>
+        <svg viewBox="0 0 24 24"><path d="M4 8a8 8 0 0113.7-5.6M20 16a8 8 0 01-13.7 5.6"/><path d="M4 3v5h5M20 21v-5h-5"/></svg>
+      </button>
+    </div>
   </div>
 
   <!-- ===== 인식 중 ===== -->
