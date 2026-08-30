@@ -381,10 +381,10 @@ async function openSheet(id = null, prefill = null){
     }
   }
 
-  $('#shotNote').innerHTML = prefill
-    ? (prefill.found >= 2 ? '사진에서 읽은 내용이에요.<br>틀린 곳은 고쳐 주세요.'
-                          : '글씨를 또렷하게 읽지 못했어요.<br>사진을 보며 채워 주세요.')
-    : '이 명함의 원본 사진이에요.';
+  $('#shotNote').innerHTML = !prefill ? '이 명함의 원본 사진이에요.'
+    : prefill.missName ? '<b>이름은 확실하지 않아 비워 뒀어요.</b><br>사진을 보고 적어 주세요.'
+    : prefill.found >= 3 ? '사진에서 읽은 내용이에요.<br>틀린 곳은 고쳐 주세요.'
+    : '확실한 것만 채웠어요.<br>빈 칸은 사진을 보고 채워 주세요.';
 
   if (shot.blob) showShotPreview(shot.blob);
   else if (shot.id){ try { showShotPreview(await Photo.get(shot.id)); } catch { showShotPreview(null); } }
