@@ -61,6 +61,13 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => (
 ));
 const fmtDate = d => d ? d.replaceAll('-', '.') : '';
 const buzz = ms => { try { navigator.vibrate?.(ms); } catch {} };
+/* 다음 프레임에 실행 — 화면이 안 그려지는 상황(백그라운드 등)에서도 반드시 한 번은 실행 */
+function nextPaint(fn){
+  let done = false;
+  const run = () => { if (!done){ done = true; fn(); } };
+  requestAnimationFrame(run);
+  setTimeout(run, 40);
+}
 
 function nameSize(name){
   let w = 0;
@@ -77,6 +84,7 @@ function frontHTML(c){
     <span class="c-tag">${esc(tag.toUpperCase())}</span>
     <div class="c-name">${esc(c.name)}<span>.</span></div>
     <span class="c-bar"></span>
+    ${c.photo ? '<span class="c-cam"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6.5" width="18" height="13" rx="2.5"/><circle cx="12" cy="13" r="3.4"/><path d="M8.5 6.5l1.2-2h4.6l1.2 2"/></svg></span>' : ''}
   </div>`;
 }
 function backHTML(c){
@@ -169,6 +177,14 @@ let openId = null, busy = false;
 const findSlot = id => (mode === 'wallet' ? stack : grid).querySelector(`.slot[data-id="${CSS.escape(id)}"]`);
 const EASE = 'cubic-bezier(.32,.78,.24,1)';
 
+/* 애니메이션이 끝나면 실행. 중단되거나(탭 전환 등) 제때 안 끝나도 반드시 한 번은 실행된다. */
+function whenDone(anim, ms, fn){
+  let done = false;
+  const run = () => { if (!done){ done = true; fn(); } };
+  anim.finished.then(run, run);
+  setTimeout(run, ms + 300);
+}
+
 /* 슬롯(from) → 상세 카드(to) 사이의 변환 + '지갑 밖으로 뽑힌' 중간 포즈 */
 function pose(from, to){
   const s  = from.width / to.width;
@@ -190,6 +206,7 @@ function pullOut(id, slotEl){
   buzz(9);
 
   $('#vName').textContent = c.name;
+  $('#photoBtn').hidden = !c.photo;
   $('#vFront').innerHTML = frontHTML(c);
   $('#vBack').innerHTML = backHTML(c);
   flipper.classList.remove('is-flipped');
@@ -219,7 +236,8 @@ function pullOut(id, slotEl){
     { transform: `translate(${dx * .16}px,${dy * .1}px) scale(${s + (1 - s) * .9}) rotate(-.7deg)`, offset: .82,
       easing: 'ease-out' },
     { transform: 'translate(0,0) scale(1) rotate(0deg)' },
-  ], { duration: 780, easing: 'linear' }).finished.then(() => { busy = false; });
+  ], { duration: 780, easing: 'linear' });
+  whenDone(vCard.getAnimations().at(-1), 780, () => { busy = false; });
 }
 
 function putBack(){
@@ -237,7 +255,7 @@ function putBack(){
   const to = vCard.getBoundingClientRect();
   if (!slotEl){
     busy = true;
-    viewer.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 200 }).finished.then(finish);
+    whenDone(viewer.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 200 }), 200, finish);
     return;
   }
   busy = true;
@@ -251,15 +269,16 @@ function putBack(){
       easing: 'cubic-bezier(.45,0,.25,1)' },
     { transform: `translate(${dx}px,${dy}px) scale(${s}) rotate(0deg)` },
   ], { duration: 620, easing: 'linear' });
-  viewer.animate([{ opacity: 1 }, { opacity: .95, offset: .55 }, { opacity: 0 }], { duration: 620, easing: 'linear' })
-    .finished.then(finish);
+  whenDone(
+    viewer.animate([{ opacity: 1 }, { opacity: .95, offset: .55 }, { opacity: 0 }], { duration: 620, easing: 'linear' }),
+    620, finish);
 }
 
 /* 카드 탭 → 뽑기 */
 $('#screen').addEventListener('click', e => {
   const slot = e.target.closest('.slot');
   if (slot) pullOut(slot.dataset.id, slot);
-  if (e.target.closest('[data-add]')) openSheet();
+  if (e.target.closest('[data-add]')) openAddMenu();
 });
 $('#viewerClose').onclick = putBack;
 $('#flipBtn').onclick = () => { flipper.classList.toggle('is-flipped'); buzz(6); };
@@ -314,46 +333,80 @@ $('#deleteBtn').onclick = () => {
   const c = cards.find(x => x.id === openId);
   if (!confirm(`'${c.name}' 명함을 지갑에서 뺄까요?`)) return;
   const id = openId;
-  vCard.animate([{ transform:'translateY(0)', opacity:1 }, { transform:'translateY(60px) scale(.9)', opacity:0 }],
-    { duration: 300, easing: 'ease-in' }).finished.then(() => {
+  whenDone(vCard.animate([{ transform:'translateY(0)', opacity:1 }, { transform:'translateY(60px) scale(.9)', opacity:0 }],
+    { duration: 300, easing: 'ease-in' }), 300, () => {
+      const gone = cards.find(x => x.id === id);
+      if (gone?.photo) Photo.del(gone.photo).catch(() => {});
       cards = cards.filter(x => x.id !== id);
       store.save(cards);
       openId = null; viewer.hidden = true; vCard.style.transform = '';
       render(); toast('명함을 뺐어요');
-    });
+  });
 };
 $('#editBtn').onclick = () => { const id = openId; putBack(); setTimeout(() => openSheet(id), 380); };
 
 /* ---------- 입력 시트 ---------- */
 const sheetWrap = $('#sheetWrap'), form = $('#form');
 let editId = null;
+let shot = { blob: null, id: null, origId: null };   // 시트에 물려 있는 사진
+let shotUrl = null;
 
-function openSheet(id = null){
+function showShotPreview(src){
+  if (shotUrl){ URL.revokeObjectURL(shotUrl); shotUrl = null; }
+  if (!src){ $('#shot').hidden = true; $('#shotImg').removeAttribute('src'); return; }
+  shotUrl = URL.createObjectURL(src);
+  $('#shotImg').src = shotUrl;
+  $('#shot').hidden = false;
+}
+
+async function openSheet(id = null, prefill = null){
   editId = id;
   form.reset();
+  shot.origId = null;
+
   if (id){
     const c = cards.find(x => x.id === id);
     $('#sheetTitle').textContent = '명함 수정하기';
     $('#submitBtn').textContent = '저장';
     for (const k of ['name','company','title','date','phone','email','memo']) form.elements[k].value = c[k] || '';
     form.elements.tags.value = (c.tags || []).join(', ');
+    shot.id = shot.origId = c.photo || null;
   } else {
-    $('#sheetTitle').textContent = '명함 기록하기';
+    $('#sheetTitle').textContent = prefill ? '이대로 넣을까요?' : '명함 기록하기';
     $('#submitBtn').textContent = '지갑에 넣기';
     form.elements.date.value = new Date().toISOString().slice(0, 10);
+    if (prefill){
+      for (const k of ['name','company','title','phone','email','memo'])
+        if (prefill[k]) form.elements[k].value = prefill[k];
+    }
   }
+
+  $('#shotNote').innerHTML = prefill
+    ? (prefill.found >= 2 ? '사진에서 읽은 내용이에요.<br>틀린 곳은 고쳐 주세요.'
+                          : '글씨를 또렷하게 읽지 못했어요.<br>사진을 보며 채워 주세요.')
+    : '이 명함의 원본 사진이에요.';
+
+  if (shot.blob) showShotPreview(shot.blob);
+  else if (shot.id){ try { showShotPreview(await Photo.get(shot.id)); } catch { showShotPreview(null); } }
+  else showShotPreview(null);
+
   sheetWrap.hidden = false;
-  requestAnimationFrame(() => sheetWrap.classList.add('is-open'));
+  nextPaint(() => sheetWrap.classList.add('is-open'));
 }
 function closeSheet(){
   sheetWrap.classList.remove('is-open');
-  setTimeout(() => { sheetWrap.hidden = true; editId = null; }, 320);
+  setTimeout(() => {
+    sheetWrap.hidden = true; editId = null;
+    shot = { blob: null, id: null, origId: null };
+    showShotPreview(null);
+  }, 320);
 }
-$('#addBtn').onclick = () => { openSheet(); buzz(9); };
 $('#cancelBtn').onclick = closeSheet;
 $('#sheetScrim').onclick = closeSheet;
+$('#shotDrop').onclick = () => { shot.blob = null; shot.id = null; showShotPreview(null); };
+$('#shotRetake').onclick = () => { retakeInto = 'sheet'; $('#photoFile').click(); };
 
-form.addEventListener('submit', e => {
+form.addEventListener('submit', async e => {
   e.preventDefault();
   const f = form.elements;
   const data = {
@@ -363,6 +416,15 @@ form.addEventListener('submit', e => {
     tags: f.tags.value.split(',').map(s => s.trim()).filter(Boolean),
   };
   if (!data.name) return;
+
+  // 사진 저장 (IndexedDB)
+  let photoId = shot.id;
+  if (shot.blob){
+    photoId = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    try { await Photo.put(photoId, shot.blob); } catch { photoId = null; toast('사진을 저장하지 못했어요'); }
+  }
+  if (shot.origId && shot.origId !== photoId) Photo.del(shot.origId).catch(() => {});
+  data.photo = photoId || undefined;
 
   if (editId){
     Object.assign(cards.find(x => x.id === editId), data);   // 디자인은 유지
@@ -380,12 +442,116 @@ form.addEventListener('submit', e => {
   buzz(12);
 });
 
+/* =========================================================
+   사진으로 명함 추가
+   ========================================================= */
+const addMenu = $('#addMenu'), scan = $('#scan');
+let retakeInto = null, scanAborted = false;
+
+function openAddMenu(){
+  addMenu.hidden = false;
+  nextPaint(() => addMenu.classList.add('is-open'));
+}
+function closeAddMenu(){
+  addMenu.classList.remove('is-open');
+  setTimeout(() => { addMenu.hidden = true; }, 320);
+}
+$('#addBtn').onclick = () => { openAddMenu(); buzz(9); };
+$('#addCancel').onclick = closeAddMenu;
+$('#addScrim').onclick = closeAddMenu;
+$('#byHand').onclick = () => { closeAddMenu(); setTimeout(() => openSheet(), 260); };
+$('#byPhoto').onclick = () => { retakeInto = 'new'; $('#photoFile').click(); };
+
+$('#photoFile').onchange = e => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (file) handlePhoto(file);
+};
+
+function setScan(p, label){
+  $('#scanFill').style.width = Math.round(Math.max(.02, Math.min(1, p)) * 100) + '%';
+  if (label) $('#scanStep').textContent = label;
+}
+$('#scanCancel').onclick = () => { scanAborted = true; Photo.abort(); scan.hidden = true; closeAddMenu(); };
+
+async function handlePhoto(file){
+  const intoSheet = retakeInto === 'sheet';
+  retakeInto = null;
+  scanAborted = false;
+
+  if (!intoSheet){                                     // 고르는 즉시 인식 화면부터 띄운다
+    closeAddMenu();
+    $('#scanImg').removeAttribute('src');
+    setScan(.02, '사진 준비 중');
+    scan.hidden = false;
+  }
+
+  let preview;
+  try {
+    const cv = await Photo.toCanvas(file);            // 회전 보정 + 축소
+    const keep = await Photo.compress(cv);            // 보관용 JPEG
+    if (scanAborted) return;
+    preview = URL.createObjectURL(keep);
+
+    if (intoSheet){                                    // 시트에서 '다시 찍기'
+      shot.blob = keep; shot.id = null;
+      showShotPreview(keep);
+      URL.revokeObjectURL(preview); preview = null;
+      return;
+    }
+
+    $('#scanImg').src = preview;
+    setScan(.05, '사진 다듬는 중');
+
+    let parsed = { found: 0 };
+    try {
+      parsed = await Photo.read(cv, (p, label) => { if (!scanAborted) setScan(p, label); });
+      if (scanAborted) return;
+    } catch {
+      if (scanAborted) return;
+      toast('글씨는 못 읽었어요. 사진만 붙일게요');
+    }
+
+    setScan(1, '다 읽었어요');
+    await new Promise(r => setTimeout(r, 260));
+    if (scanAborted) return;
+
+    shot.blob = keep; shot.id = null;
+    openSheet(null, parsed);
+    buzz(14);
+  } catch {
+    toast('사진을 열 수 없어요');
+  } finally {
+    scan.hidden = true;                                // 어떤 경로로 끝나든 인식 화면은 닫는다
+    if (preview) URL.revokeObjectURL(preview);
+  }
+}
+
+/* ---------- 원본 사진 보기 ---------- */
+let viewUrl = null;
+$('#photoBtn').onclick = async () => {
+  const c = cards.find(x => x.id === openId);
+  if (!c?.photo) return;
+  try {
+    const blob = await Photo.get(c.photo);
+    if (!blob) return toast('사진을 찾을 수 없어요');
+    if (viewUrl) URL.revokeObjectURL(viewUrl);
+    viewUrl = URL.createObjectURL(blob);
+    $('#photoViewImg').src = viewUrl;
+    $('#photoView').hidden = false;
+  } catch { toast('사진을 불러오지 못했어요'); }
+};
+$('#photoView').onclick = () => {
+  $('#photoView').hidden = true;
+  if (viewUrl){ URL.revokeObjectURL(viewUrl); viewUrl = null; }
+};
+
 /* ---------- 토스트 ---------- */
 let toastT;
 function toast(msg){
   const el = $('#toast');
   el.textContent = msg; el.hidden = false;
-  requestAnimationFrame(() => el.classList.add('is-on'));
+  nextPaint(() => el.classList.add('is-on'));
   clearTimeout(toastT);
   toastT = setTimeout(() => {
     el.classList.remove('is-on');
@@ -394,13 +560,26 @@ function toast(msg){
 }
 
 /* ---------- 백업 ---------- */
-$('#exportBtn').onclick = () => {
-  const blob = new Blob([JSON.stringify(cards, null, 2)], { type: 'application/json' });
+const toDataURL = blob => new Promise(res => {
+  const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => res(null); r.readAsDataURL(blob);
+});
+$('#exportBtn').onclick = async () => {
+  $('#moreMenu').hidden = true;
+  toast('백업 파일을 만드는 중…');
+  const out = [];
+  for (const c of cards){                       // 사진도 함께 담아 복원되게
+    const copy = { ...c };
+    if (c.photo){
+      try { const b = await Photo.get(c.photo); if (b) copy.photoData = await toDataURL(b); } catch {}
+    }
+    out.push(copy);
+  }
+  const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `card-wallet-${new Date().toISOString().slice(0, 10)}.json`;
   a.click(); URL.revokeObjectURL(a.href);
-  $('#moreMenu').hidden = true;
+  toast(`${cards.length}장 백업했어요`);
 };
 $('#importBtn').onclick = () => $('#importFile').click();
 $('#importFile').onchange = async e => {
@@ -411,6 +590,13 @@ $('#importFile').onchange = async e => {
     if (!Array.isArray(incoming)) throw 0;
     const seen = new Set(cards.map(c => c.id));
     const add = incoming.filter(c => c && c.id && !seen.has(c.id));
+    for (const c of add){
+      if (c.photoData && c.photo){
+        try { await Photo.put(c.photo, await (await fetch(c.photoData)).blob()); }
+        catch { delete c.photo; }
+      }
+      delete c.photoData;
+    }
     cards = cards.concat(add);
     store.save(cards); render(); toast(`${add.length}장 불러왔어요`);
   } catch { toast('불러올 수 없는 파일이에요'); }
@@ -420,7 +606,10 @@ $('#importFile').onchange = async e => {
 /* ---------- 뒤로가기 / ESC ---------- */
 addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
-  if (!sheetWrap.hidden) closeSheet();
+  if (!$('#photoView').hidden) $('#photoView').click();
+  else if (!scan.hidden) $('#scanCancel').click();
+  else if (!sheetWrap.hidden) closeSheet();
+  else if (!addMenu.hidden) closeAddMenu();
   else if (!viewer.hidden) putBack();
 });
 
